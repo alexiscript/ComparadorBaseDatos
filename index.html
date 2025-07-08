@@ -4,7 +4,6 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="style.css">
     <title>Sistema de Coincidencias - Excel a JSON</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
@@ -30,7 +29,7 @@
                 <div class="export-buttons">
                     <button class="btn success" onclick="downloadBaseJSON()" style="display: none;"
                         id="downloadBaseBtn">
-                        💾 Descargar JSON Base
+                        💾 Descargar Excel Base
                     </button>
                     <button class="btn warning" onclick="previewBaseData()" style="display: none;" id="previewBaseBtn">
                         👁️ Vista Previa
@@ -324,16 +323,39 @@
             resultsContainer.innerHTML = resultsHTML;
         }
 
-        // Función para descargar JSON base
+        // Función para descargar Excel base
         function downloadBaseJSON() {
-            const dataStr = JSON.stringify(baseData, null, 2);
-            const dataBlob = new Blob([dataStr], { type: 'application/json' });
-            const url = URL.createObjectURL(dataBlob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = 'datos_base.json';
-            link.click();
-            URL.revokeObjectURL(url);
+            if (baseData.length === 0) {
+                alert('No hay datos base para exportar');
+                return;
+            }
+
+            const excelData = [];
+
+            // Obtener todas las columnas posibles
+            const allColumns = new Set();
+            baseData.forEach(record => {
+                Object.keys(record).forEach(key => allColumns.add(key));
+            });
+
+            const headers = Array.from(allColumns);
+            excelData.push(headers);
+
+            // Agregar datos
+            baseData.forEach(record => {
+                const row = headers.map(header => record[header] || '');
+                excelData.push(row);
+            });
+
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet(excelData);
+
+            // Aplicar ancho de columnas
+            const colWidths = headers.map(() => ({ wch: 20 }));
+            ws['!cols'] = colWidths;
+
+            XLSX.utils.book_append_sheet(wb, ws, 'Datos_Base');
+            XLSX.writeFile(wb, 'datos_base.xlsx');
         }
 
         // Función para vista previa
@@ -564,7 +586,7 @@
             XLSX.writeFile(wb, 'Reporte_Completo_Coincidencias.xlsx');
         }
 
-        // Función para exportar reporte completo
+        // Función para exportar reporte completo JSON (opcional)
         function exportFullReport() {
             const report = {
                 resumen: {
