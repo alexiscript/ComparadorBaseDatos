@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css">
+    <title>Sistema de Coincidencias - Excel a JSON</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔍 Sistema de Coincidencias</h1>
+            <p>Transformar Excel a JSON y encontrar coincidencias inteligentes</p>
+        </div>
+
+        <div class="content">
+            <!-- Sección 1: Cargar archivo base -->
+            <div class="section">
+                <h2>📊 1. Cargar Archivo Base (30,630 registros)</h2>
+                <div class="file-upload">
+                    <input type="file" id="baseFile" accept=".xlsx,.xls" />
+                    <div class="file-upload-btn">📁 Seleccionar archivo Excel base</div>
+                </div>
+                <div id="baseStatus"></div>
+                <div class="export-buttons">
+                    <button class="btn success" onclick="downloadBaseJSON()" style="display: none;"
+                        id="downloadBaseBtn">
+                        💾 Descargar JSON Base
+                    </button>
+                    <button class="btn warning" onclick="previewBaseData()" style="display: none;" id="previewBaseBtn">
+                        👁️ Vista Previa
+                    </button>
+                </div>
+            </div>
+
+            <!-- Sección 2: Cargar archivo de tags -->
+            <div class="section">
+                <h2>🏷️ 2. Cargar Archivo de Tags para Comparar</h2>
+                <div class="file-upload">
+                    <input type="file" id="tagsFile" accept=".xlsx,.xls" />
+                    <div class="file-upload-btn">📁 Seleccionar archivo Excel de tags</div>
+                </div>
+                <div id="tagsStatus"></div>
+                <button class="btn" onclick="findMatches()" style="display: none;" id="findMatchesBtn">
+                    🔍 Buscar Coincidencias
+                </button>
+            </div>
+
+            <!-- Sección 3: Resultados -->
+            <div class="section" id="resultsSection" style="display: none;">
+                <h2>📋 3. Resultados de Coincidencias</h2>
+                <div class="stats" id="statsContainer"></div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="export-buttons">
+                    <button class="btn success" onclick="exportToExcel()">📊 Exportar a Excel (Coincidencias)</button>
+                    <button class="btn warning" onclick="exportNoMatchesToExcel()">📋 Exportar Sin Coincidencias
+                        (Excel)</button>
+                    <button class="btn" onclick="exportFullReportExcel()">📈 Reporte Completo Excel</button>
+                    <button class="btn" onclick="exportFullReport()">📄 Reporte JSON</button>
+                </div>
+                <div class="results-container" id="resultsContainer"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let baseData = [];
+        let tagsData = [];
+        let matches = [];
+        let noMatches = [];
+
+        // Función para normalizar RUT
+        function normalizeRUT(rut) {
+            if (!rut) return '';
+            return rut.toString().replace(/[^\d\-kK]/g, '').toUpperCase();
+        }
+
+        // Función para normalizar nombres
+        function normalizeName(name) {
+            if (!name) return '';
+            return name.toString()
+                .toUpperCase()
+                .replace(/[^\w\s]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+        }
+
+        // Función para calcular similitud entre nombres
+        function calculateSimilarity(name1, name2) {
+            const words1 = normalizeName(name1).split(' ');
+            const words2 = normalizeName(name2).split(' ');
+
+            let matches = 0;
+            let totalWords = Math.max(words1.length, words2.length);
+
+            for (let word1 of words1) {
+                if (words2.includes(word1) && word1.length > 2) {
+                    matches++;
+                }
+            }
+
+            return totalWords > 0 ? (matches / totalWords) : 0;
+        }
+
+        // Función para leer archivos Excel
+        function readExcel(file, callback) {
+            const reader = new FileReader();
+            reader.onload = function (e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+                    callback(null, jsonData);
+                } catch (error) {
+                    callback(error, null);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        // Función para procesar datos base
+        function processBaseData(rawData) {
+            const headers = rawData[0];
+            const processed = [];
+
+            for (let i = 1; i < rawData.length; i++) {
+                const row = rawData[i];
+                if (row.length > 0) {
+                    const record = {};
+                    headers.forEach((header, index) => {
+                        record[header] = row[index] || '';
+                    });
+                    processed.push(record);
+                }
+            }
+
+            return processed;
+        }
+
+        // Event listeners para archivos
+        document.getElementById('baseFile').addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            if (file) {
+                document.getElementById('baseStatus').innerHTML =
+                    '<div class="status info">🔄 Procesando archivo base...</div>';
+
+                readExcel(file, function (error, data) {
+                    if (error) {
+                        document.getElementById('baseStatus').innerHTML =
+                            '<div class="status error">❌ Error al procesar archivo: ' + error.message + '</div>';
+                        return;
+                    }
+
+                    baseData = processBaseData(data);
+                    document.getElementById('baseStatus').innerHTML =
+                        '<div class="status success">✅ Archivo base cargado: ' + baseData.length + ' registros</div>';
+
+                    document.getElementById('downloadBaseBtn').style.display = 'inline-block';
+                    document.getElementById('previewBaseBtn').style.display = 'inline-block';
+                });
+            }
+        });
+
+        document.getElementById('tagsFile').addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            if (file) {
+                document.getElementById('tagsStatus').innerHTML =
+                    '<div class="status info">🔄 Procesando archivo de tags...</div>';
+
+                readExcel(file, function (error, data) {
+                    if (error) {
+                        document.getElementById('tagsStatus').innerHTML =
+                            '<div class="status error">❌ Error al procesar archivo: ' + error.message + '</div>';
+                        return;
+                    }
+
+                    tagsData = processBaseData(data);
+                    document.getElementById('tagsStatus').innerHTML =
+                        '<div class="status success">✅ Archivo de tags cargado: ' + tagsData.length + ' registros</div>';
+
+                    if (baseData.length > 0) {
+                        document.getElementById('findMatchesBtn').style.display = 'inline-block';
+                    }
+                });
+            }
+        });
+
+        // Función para buscar coincidencias
+        function findMatches() {
+            if (baseData.length === 0 || tagsData.length === 0) {
+                alert('Debe cargar ambos archivos primero');
+                return;
+            }
+
+            matches = [];
+            noMatches = [];
+
+            const progressFill = document.getElementById('progressFill');
+            const resultsSection = document.getElementById('resultsSection');
+
+            resultsSection.style.display = 'block';
+
+            // Procesar cada registro de tags
+            for (let i = 0; i < tagsData.length; i++) {
+                const tagRecord = tagsData[i];
+                let found = false;
+
+                // Buscar coincidencias en datos base
+                for (let j = 0; j < baseData.length; j++) {
+                    const baseRecord = baseData[j];
+
+                    // Verificar coincidencia por RUT
+                    if (tagRecord.RUT && baseRecord.RUT) {
+                        const tagRUT = normalizeRUT(tagRecord.RUT);
+                        const baseRUT = normalizeRUT(baseRecord.RUT);
+
+                        if (tagRUT === baseRUT) {
+                            matches.push({
+                                tagRecord: tagRecord,
+                                baseRecord: baseRecord,
+                                matchType: 'RUT',
+                                similarity: 1.0
+                            });
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    // Verificar coincidencia por nombre si no encontró por RUT
+                    if (!found && tagRecord.NOMBRE && baseRecord.NOMBRE) {
+                        const similarity = calculateSimilarity(tagRecord.NOMBRE, baseRecord.NOMBRE);
+
+                        if (similarity >= 0.7) {
+                            matches.push({
+                                tagRecord: tagRecord,
+                                baseRecord: baseRecord,
+                                matchType: 'NOMBRE',
+                                similarity: similarity
+                            });
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!found) {
+                    noMatches.push(tagRecord);
+                }
+
+                // Actualizar progreso
+                const progress = ((i + 1) / tagsData.length) * 100;
+                progressFill.style.width = progress + '%';
+            }
+
+            displayResults();
+        }
+
+        // Función para mostrar resultados
+        function displayResults() {
+            const statsContainer = document.getElementById('statsContainer');
+            const resultsContainer = document.getElementById('resultsContainer');
+
+            // Mostrar estadísticas
+            const matchPercentage = ((matches.length / tagsData.length) * 100).toFixed(1);
+            statsContainer.innerHTML = `
+                <div class="stat-box">
+                    <div class="stat-number">${matches.length}</div>
+                    <div class="stat-label">Coincidencias</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number">${noMatches.length}</div>
+                    <div class="stat-label">Sin coincidencias</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number">${matchPercentage}%</div>
+                    <div class="stat-label">Efectividad</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number">${tagsData.length}</div>
+                    <div class="stat-label">Total procesados</div>
+                </div>
+            `;
+
+            // Mostrar primeras coincidencias con formato mejorado
+            let resultsHTML = '<h3>🎯 Primeras 10 Coincidencias (Vista Previa del Excel):</h3>';
+            matches.slice(0, 10).forEach(match => {
+                const diferentRUT = match.tagRecord.RUT !== match.baseRecord.RUT;
+                const rutStatus = diferentRUT ? '❌ RUT DIFERENTE' : '✅ RUT IGUAL';
+                const action = diferentRUT ? 'CORREGIR RUT EN TAG' : 'VERIFICAR OTROS DATOS';
+
+                resultsHTML += `
+                    <div class="match-item">
+                        <strong>Coincidencia por ${match.matchType}</strong> (${(match.similarity * 100).toFixed(1)}%) - ${rutStatus}
+                        <div class="match-details">
+                            <strong>📋 TAG:</strong> ${match.tagRecord.RUT || 'N/A'} | ${match.tagRecord.NOMBRE || 'N/A'} | ${match.tagRecord.EMPRESA || 'N/A'}
+                        </div>
+                        <div class="match-details">
+                            <strong>💾 BASE:</strong> ${match.baseRecord.RUT || 'N/A'} | ${match.baseRecord.NOMBRE || 'N/A'} | ${match.baseRecord.EMPRESA || 'N/A'}
+                        </div>
+                        <div class="match-details" style="color: #e74c3c; font-weight: bold;">
+                            <strong>🔧 ACCIÓN:</strong> ${action}
+                        </div>
+                    </div>
+                `;
+            });
+
+            resultsHTML += '<h3>⚠️ Primeros 10 Sin Coincidencias:</h3>';
+            noMatches.slice(0, 10).forEach(record => {
+                resultsHTML += `
+                    <div class="no-match-item">
+                        <strong>Sin coincidencia:</strong> ${record.RUT || 'N/A'} - ${record.NOMBRE || 'N/A'}
+                    </div>
+                `;
+            });
+
+            resultsContainer.innerHTML = resultsHTML;
+        }
+
+        // Función para descargar JSON base
+        function downloadBaseJSON() {
+            const dataStr = JSON.stringify(baseData, null, 2);
+            const dataBlob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'datos_base.json';
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // Función para vista previa
+        function previewBaseData() {
+            const preview = baseData.slice(0, 5);
+            alert('Vista previa de los primeros 5 registros:\n\n' +
+                JSON.stringify(preview, null, 2));
+        }
+
+        // Función para exportar coincidencias a Excel
+        function exportToExcel() {
+            if (matches.length === 0) {
+                alert('No hay coincidencias para exportar');
+                return;
+            }
+
+            // Crear datos para Excel con coincidencias lado a lado
+            const excelData = [];
+
+            // Encabezados
+            const headers = [
+                'TIPO_COINCIDENCIA', 'SIMILITUD_%',
+                'TAG_RUT', 'TAG_NOMBRE', 'TAG_EMPRESA', 'TAG_CONTRATO', 'TAG_CARGO',
+                'BASE_RUT', 'BASE_NOMBRE', 'BASE_EMPRESA', 'BASE_CONTRATO', 'BASE_CARGO',
+                'BASE_ADC_NOMBRE_CTA', 'BASE_ADC_NOMBRE_COD', 'BASE_GERENCIA',
+                'BASE_SUPERINTENDENCIA', 'BASE_TIPO', 'BASE_ACTUALIZACION',
+                'DIFERENCIA_RUT', 'ACCION_RECOMENDADA'
+            ];
+
+            excelData.push(headers);
+
+            // Datos de coincidencias
+            matches.forEach(match => {
+                const tagRecord = match.tagRecord;
+                const baseRecord = match.baseRecord;
+
+                const row = [
+                    match.matchType,
+                    (match.similarity * 100).toFixed(1) + '%',
+                    tagRecord.RUT || '',
+                    tagRecord.NOMBRE || '',
+                    tagRecord.EMPRESA || '',
+                    tagRecord.CONTRATO || '',
+                    tagRecord.CARGO || '',
+                    baseRecord.RUT || '',
+                    baseRecord.NOMBRE || '',
+                    baseRecord.EMPRESA || '',
+                    baseRecord.CONTRATO || '',
+                    baseRecord.CARGO || '',
+                    baseRecord.ADC_NOMBRE_CTA || '',
+                    baseRecord.ADC_NOMBRE_COD || '',
+                    baseRecord.GERENCIA || '',
+                    baseRecord.SUPERINTENDENCIA || '',
+                    baseRecord.TIPO || '',
+                    baseRecord.ACTUALIZACION || '',
+                    (tagRecord.RUT !== baseRecord.RUT) ? 'SÍ' : 'NO',
+                    (tagRecord.RUT !== baseRecord.RUT) ? 'CORREGIR RUT EN TAG' : 'VERIFICAR OTROS DATOS'
+                ];
+
+                excelData.push(row);
+            });
+
+            // Crear libro de Excel
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet(excelData);
+
+            // Aplicar estilos y ancho de columnas
+            const colWidths = [
+                { wch: 15 }, { wch: 12 }, { wch: 15 }, { wch: 30 }, { wch: 20 },
+                { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 30 }, { wch: 20 },
+                { wch: 15 }, { wch: 20 }, { wch: 25 }, { wch: 25 }, { wch: 15 },
+                { wch: 20 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 25 }
+            ];
+            ws['!cols'] = colWidths;
+
+            XLSX.utils.book_append_sheet(wb, ws, 'Coincidencias');
+            XLSX.writeFile(wb, 'Coincidencias_Lado_a_Lado.xlsx');
+        }
+
+        // Función para exportar sin coincidencias a Excel
+        function exportNoMatchesToExcel() {
+            if (noMatches.length === 0) {
+                alert('No hay registros sin coincidencias para exportar');
+                return;
+            }
+
+            const excelData = [];
+
+            // Encabezados
+            const headers = [
+                'RUT', 'NOMBRE', 'EMPRESA', 'CONTRATO', 'CARGO', 'ESTADO', 'OBSERVACIONES'
+            ];
+
+            excelData.push(headers);
+
+            // Datos sin coincidencias
+            noMatches.forEach(record => {
+                const row = [
+                    record.RUT || '',
+                    record.NOMBRE || '',
+                    record.EMPRESA || '',
+                    record.CONTRATO || '',
+                    record.CARGO || '',
+                    'SIN COINCIDENCIA',
+                    'VERIFICAR MANUALMENTE O ELIMINAR'
+                ];
+
+                excelData.push(row);
+            });
+
+            const wb = XLSX.utils.book_new();
+            const ws = XLSX.utils.aoa_to_sheet(excelData);
+
+            const colWidths = [
+                { wch: 15 }, { wch: 30 }, { wch: 20 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 30 }
+            ];
+            ws['!cols'] = colWidths;
+
+            XLSX.utils.book_append_sheet(wb, ws, 'Sin_Coincidencias');
+            XLSX.writeFile(wb, 'Sin_Coincidencias.xlsx');
+        }
+
+        // Función para exportar reporte completo a Excel
+        function exportFullReportExcel() {
+            const wb = XLSX.utils.book_new();
+
+            // Hoja 1: Resumen
+            const resumenData = [
+                ['REPORTE DE COINCIDENCIAS - RESUMEN'],
+                [''],
+                ['Total de registros en Tags:', tagsData.length],
+                ['Total de coincidencias encontradas:', matches.length],
+                ['Total sin coincidencias:', noMatches.length],
+                ['Porcentaje de efectividad:', ((matches.length / tagsData.length) * 100).toFixed(1) + '%'],
+                ['Fecha de generación:', new Date().toLocaleString()],
+                [''],
+                ['DISTRIBUCIÓN POR TIPO DE COINCIDENCIA:'],
+                ['Por RUT:', matches.filter(m => m.matchType === 'RUT').length],
+                ['Por NOMBRE:', matches.filter(m => m.matchType === 'NOMBRE').length]
+            ];
+
+            const wsResumen = XLSX.utils.aoa_to_sheet(resumenData);
+            wsResumen['!cols'] = [{ wch: 30 }, { wch: 15 }];
+            XLSX.utils.book_append_sheet(wb, wsResumen, 'Resumen');
+
+            // Hoja 2: Coincidencias detalladas
+            const coincidenciasData = [];
+            const headersCoincidencias = [
+                'TIPO_COINCIDENCIA', 'SIMILITUD_%',
+                'TAG_RUT', 'TAG_NOMBRE', 'TAG_EMPRESA', 'TAG_CONTRATO', 'TAG_CARGO',
+                'BASE_RUT', 'BASE_NOMBRE', 'BASE_EMPRESA', 'BASE_CONTRATO', 'BASE_CARGO',
+                'BASE_ADC_NOMBRE_CTA', 'BASE_ADC_NOMBRE_COD', 'BASE_GERENCIA',
+                'BASE_SUPERINTENDENCIA', 'BASE_TIPO', 'BASE_ACTUALIZACION',
+                'DIFERENCIA_RUT', 'ACCION_RECOMENDADA'
+            ];
+
+            coincidenciasData.push(headersCoincidencias);
+
+            matches.forEach(match => {
+                const tagRecord = match.tagRecord;
+                const baseRecord = match.baseRecord;
+
+                const row = [
+                    match.matchType,
+                    (match.similarity * 100).toFixed(1) + '%',
+                    tagRecord.RUT || '',
+                    tagRecord.NOMBRE || '',
+                    tagRecord.EMPRESA || '',
+                    tagRecord.CONTRATO || '',
+                    tagRecord.CARGO || '',
+                    baseRecord.RUT || '',
+                    baseRecord.NOMBRE || '',
+                    baseRecord.EMPRESA || '',
+                    baseRecord.CONTRATO || '',
+                    baseRecord.CARGO || '',
+                    baseRecord.ADC_NOMBRE_CTA || '',
+                    baseRecord.ADC_NOMBRE_COD || '',
+                    baseRecord.GERENCIA || '',
+                    baseRecord.SUPERINTENDENCIA || '',
+                    baseRecord.TIPO || '',
+                    baseRecord.ACTUALIZACION || '',
+                    (tagRecord.RUT !== baseRecord.RUT) ? 'SÍ' : 'NO',
+                    (tagRecord.RUT !== baseRecord.RUT) ? 'CORREGIR RUT EN TAG' : 'VERIFICAR OTROS DATOS'
+                ];
+
+                coincidenciasData.push(row);
+            });
+
+            const wsCoincidencias = XLSX.utils.aoa_to_sheet(coincidenciasData);
+            const colWidths = [
+                { wch: 15 }, { wch: 12 }, { wch: 15 }, { wch: 30 }, { wch: 20 },
+                { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 30 }, { wch: 20 },
+                { wch: 15 }, { wch: 20 }, { wch: 25 }, { wch: 25 }, { wch: 15 },
+                { wch: 20 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 25 }
+            ];
+            wsCoincidencias['!cols'] = colWidths;
+            XLSX.utils.book_append_sheet(wb, wsCoincidencias, 'Coincidencias_Detalladas');
+
+            // Hoja 3: Sin coincidencias
+            const sinCoincidenciasData = [];
+            const headersSinCoincidencias = [
+                'RUT', 'NOMBRE', 'EMPRESA', 'CONTRATO', 'CARGO', 'ESTADO', 'OBSERVACIONES'
+            ];
+
+            sinCoincidenciasData.push(headersSinCoincidencias);
+
+            noMatches.forEach(record => {
+                const row = [
+                    record.RUT || '',
+                    record.NOMBRE || '',
+                    record.EMPRESA || '',
+                    record.CONTRATO || '',
+                    record.CARGO || '',
+                    'SIN COINCIDENCIA',
+                    'VERIFICAR MANUALMENTE O ELIMINAR'
+                ];
+
+                sinCoincidenciasData.push(row);
+            });
+
+            const wsSinCoincidencias = XLSX.utils.aoa_to_sheet(sinCoincidenciasData);
+            const colWidthsSin = [
+                { wch: 15 }, { wch: 30 }, { wch: 20 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 30 }
+            ];
+            wsSinCoincidencias['!cols'] = colWidthsSin;
+            XLSX.utils.book_append_sheet(wb, wsSinCoincidencias, 'Sin_Coincidencias');
+
+            XLSX.writeFile(wb, 'Reporte_Completo_Coincidencias.xlsx');
+        }
+
+        // Función para exportar reporte completo
+        function exportFullReport() {
+            const report = {
+                resumen: {
+                    totalTags: tagsData.length,
+                    totalCoincidencias: matches.length,
+                    totalSinCoincidencias: noMatches.length,
+                    porcentajeEfectividad: ((matches.length / tagsData.length) * 100).toFixed(1)
+                },
+                coincidencias: matches,
+                sinCoincidencias: noMatches,
+                fechaGeneracion: new Date().toISOString()
+            };
+
+            const dataStr = JSON.stringify(report, null, 2);
+            const dataBlob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'reporte_completo.json';
+            link.click();
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+
+</html>
