@@ -8,7 +8,6 @@
     <title>Sistema de Coincidencias - Excel a JSON</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
-
 </head>
 
 <body>
@@ -193,8 +192,8 @@
             }
         });
 
-        // Función para buscar coincidencias
-        function findMatches() {
+        // Función para buscar coincidencias con procesamiento por lotes
+        async function findMatches() {
             if (baseData.length === 0 || tagsData.length === 0) {
                 alert('Debe cargar ambos archivos primero');
                 return;
@@ -205,61 +204,89 @@
 
             const progressFill = document.getElementById('progressFill');
             const resultsSection = document.getElementById('resultsSection');
+            const findBtn = document.getElementById('findMatchesBtn');
 
             resultsSection.style.display = 'block';
+            findBtn.disabled = true;
+            findBtn.textContent = '🔄 Procesando...';
 
-            // Procesar cada registro de tags
-            for (let i = 0; i < tagsData.length; i++) {
-                const tagRecord = tagsData[i];
-                let found = false;
+            // Procesar en lotes de 100 registros para evitar bloqueo
+            const batchSize = 100;
+            const totalBatches = Math.ceil(tagsData.length / batchSize);
 
-                // Buscar coincidencias en datos base
-                for (let j = 0; j < baseData.length; j++) {
-                    const baseRecord = baseData[j];
+            for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+                const startIndex = batchIndex * batchSize;
+                const endIndex = Math.min(startIndex + batchSize, tagsData.length);
 
-                    // Verificar coincidencia por RUT
-                    if (tagRecord.RUT && baseRecord.RUT) {
-                        const tagRUT = normalizeRUT(tagRecord.RUT);
-                        const baseRUT = normalizeRUT(baseRecord.RUT);
+                // Procesar lote actual
+                for (let i = startIndex; i < endIndex; i++) {
+                    const tagRecord = tagsData[i];
+                    let found = false;
+                    let bestMatch = null;
+                    let bestSimilarity = 0;
 
-                        if (tagRUT === baseRUT) {
-                            matches.push({
-                                tagRecord: tagRecord,
-                                baseRecord: baseRecord,
-                                matchType: 'RUT',
-                                similarity: 1.0
-                            });
-                            found = true;
-                            break;
+                    // Buscar coincidencias en datos base
+                    for (let j = 0; j < baseData.length; j++) {
+                        const baseRecord = baseData[j];
+
+                        // Verificar coincidencia por RUT primero
+                        if (tagRecord.RUT && baseRecord.RUT) {
+                            const tagRUT = normalizeRUT(tagRecord.RUT);
+                            const baseRUT = normalizeRUT(baseRecord.RUT);
+
+                            if (tagRUT === baseRUT) {
+                                matches.push({
+                                    tagRecord: tagRecord,
+                                    baseRecord: baseRecord,
+                                    matchType: 'RUT_EXACTO',
+                                    similarity: 1.0,
+                                    rutMatch: true,
+                                    nameMatch: true
+                                });
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        // Si no encontró por RUT, buscar por nombre
+                        if (!found && tagRecord.NOMBRE && baseRecord.NOMBRE) {
+                            const similarity = calculateSimilarity(tagRecord.NOMBRE, baseRecord.NOMBRE);
+
+                            if (similarity >= 0.7 && similarity > bestSimilarity) {
+                                bestMatch = baseRecord;
+                                bestSimilarity = similarity;
+                            }
                         }
                     }
 
-                    // Verificar coincidencia por nombre si no encontró por RUT
-                    if (!found && tagRecord.NOMBRE && baseRecord.NOMBRE) {
-                        const similarity = calculateSimilarity(tagRecord.NOMBRE, baseRecord.NOMBRE);
-
-                        if (similarity >= 0.7) {
-                            matches.push({
-                                tagRecord: tagRecord,
-                                baseRecord: baseRecord,
-                                matchType: 'NOMBRE',
-                                similarity: similarity
-                            });
-                            found = true;
-                            break;
-                        }
+                    // Si encontró coincidencia por nombre pero no por RUT
+                    if (!found && bestMatch) {
+                        matches.push({
+                            tagRecord: tagRecord,
+                            baseRecord: bestMatch,
+                            matchType: 'NOMBRE_SIMILAR',
+                            similarity: bestSimilarity,
+                            rutMatch: false,
+                            nameMatch: true
+                        });
+                        found = true;
                     }
-                }
 
-                if (!found) {
-                    noMatches.push(tagRecord);
+                    if (!found) {
+                        noMatches.push(tagRecord);
+                    }
                 }
 
                 // Actualizar progreso
-                const progress = ((i + 1) / tagsData.length) * 100;
+                const progress = ((batchIndex + 1) / totalBatches) * 100;
                 progressFill.style.width = progress + '%';
+
+                // Permitir que el navegador respire entre lotes
+                await new Promise(resolve => setTimeout(resolve, 10));
             }
 
+            findBtn.disabled = false;
+            findBtn.textContent = '🔍 Buscar Coincidencias';
             displayResults();
         }
 
@@ -289,24 +316,51 @@
                 </div>
             `;
 
-            // Mostrar primeras coincidencias con formato mejorado
-            let resultsHTML = '<h3>🎯 Primeras 10 Coincidencias (Vista Previa del Excel):</h3>';
+            // Mostrar primeras coincidencias con formato mejorado para visualización
+            let resultsHTML = '<h3>🎯 Primeras 10 Coincidencias (Así se verán en Excel):</h3>';
             matches.slice(0, 10).forEach(match => {
-                const diferentRUT = match.tagRecord.RUT !== match.baseRecord.RUT;
-                const rutStatus = diferentRUT ? '❌ RUT DIFERENTE' : '✅ RUT IGUAL';
-                const action = diferentRUT ? 'CORREGIR RUT EN TAG' : 'VERIFICAR OTROS DATOS';
+                const tagRecord = match.tagRecord;
+                const baseRecord = match.baseRecord;
+
+                let statusColor = '#28a745';
+                let statusText = '✅ DATOS CORRECTOS';
+                let action = 'MANTENER';
+
+                if (match.matchType === 'NOMBRE_SIMILAR') {
+                    const rutDiferente = normalizeRUT(tagRecord.RUT) !== normalizeRUT(baseRecord.RUT);
+                    if (rutDiferente) {
+                        statusColor = '#dc3545';
+                        statusText = '❌ RUT INCORRECTO EN TAG';
+                        action = `CAMBIAR RUT DE ${tagRecord.RUT} A ${baseRecord.RUT}`;
+                    } else {
+                        statusColor = '#ffc107';
+                        statusText = '⚠️ VERIFICAR ORTOGRAFÍA';
+                        action = 'REVISAR NOMBRE';
+                    }
+                }
 
                 resultsHTML += `
-                    <div class="match-item">
-                        <strong>Coincidencia por ${match.matchType}</strong> (${(match.similarity * 100).toFixed(1)}%) - ${rutStatus}
-                        <div class="match-details">
-                            <strong>📋 TAG:</strong> ${match.tagRecord.RUT || 'N/A'} | ${match.tagRecord.NOMBRE || 'N/A'} | ${match.tagRecord.EMPRESA || 'N/A'}
+                    <div class="match-item" style="border-left-color: ${statusColor}">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                            <strong>Similitud: ${(match.similarity * 100).toFixed(1)}%</strong>
+                            <span style="color: ${statusColor}; font-weight: bold;">${statusText}</span>
                         </div>
-                        <div class="match-details">
-                            <strong>💾 BASE:</strong> ${match.baseRecord.RUT || 'N/A'} | ${match.baseRecord.NOMBRE || 'N/A'} | ${match.baseRecord.EMPRESA || 'N/A'}
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 10px;">
+                            <div>
+                                <strong>📋 BASE (CORRECTO):</strong><br>
+                                RUT: ${baseRecord.RUT || 'N/A'}<br>
+                                NOMBRE: ${baseRecord.NOMBRE || 'N/A'}<br>
+                                EMPRESA: ${baseRecord.EMPRESA || 'N/A'}
+                            </div>
+                            <div>
+                                <strong>🏷️ TAG (REVISAR):</strong><br>
+                                RUT: ${tagRecord.RUT || 'N/A'}<br>
+                                NOMBRE: ${tagRecord.NOMBRE || 'N/A'}<br>
+                                EMPRESA: ${tagRecord.EMPRESA || 'N/A'}
+                            </div>
                         </div>
-                        <div class="match-details" style="color: #e74c3c; font-weight: bold;">
-                            <strong>🔧 ACCIÓN:</strong> ${action}
+                        <div style="background: #f8f9fa; padding: 10px; border-radius: 5px;">
+                            <strong>🔧 ACCIÓN REQUERIDA:</strong> ${action}
                         </div>
                     </div>
                 `;
@@ -366,54 +420,76 @@
                 JSON.stringify(preview, null, 2));
         }
 
-        // Función para exportar coincidencias a Excel
+        // Función para exportar coincidencias a Excel con formato lado a lado mejorado
         function exportToExcel() {
             if (matches.length === 0) {
                 alert('No hay coincidencias para exportar');
                 return;
             }
 
-            // Crear datos para Excel con coincidencias lado a lado
+            // Crear datos para Excel con formato lado a lado claro
             const excelData = [];
 
-            // Encabezados
+            // Encabezados descriptivos
             const headers = [
-                'TIPO_COINCIDENCIA', 'SIMILITUD_%',
-                'TAG_RUT', 'TAG_NOMBRE', 'TAG_EMPRESA', 'TAG_CONTRATO', 'TAG_CARGO',
-                'BASE_RUT', 'BASE_NOMBRE', 'BASE_EMPRESA', 'BASE_CONTRATO', 'BASE_CARGO',
-                'BASE_ADC_NOMBRE_CTA', 'BASE_ADC_NOMBRE_COD', 'BASE_GERENCIA',
-                'BASE_SUPERINTENDENCIA', 'BASE_TIPO', 'BASE_ACTUALIZACION',
-                'DIFERENCIA_RUT', 'ACCION_RECOMENDADA'
+                '🔍 TIPO_COINCIDENCIA',
+                '📊 SIMILITUD_%',
+                '📋 BASE_RUT (CORRECTO)',
+                '📋 BASE_NOMBRE (CORRECTO)',
+                '📋 BASE_EMPRESA',
+                '📋 BASE_CARGO',
+                '🏷️ TAG_RUT (REVISAR)',
+                '🏷️ TAG_NOMBRE (REVISAR)',
+                '🏷️ TAG_EMPRESA',
+                '🏷️ TAG_CARGO',
+                '⚠️ PROBLEMA_DETECTADO',
+                '🔧 ACCIÓN_REQUERIDA',
+                '📝 OBSERVACIONES'
             ];
 
             excelData.push(headers);
 
-            // Datos de coincidencias
+            // Datos de coincidencias con análisis detallado
             matches.forEach(match => {
                 const tagRecord = match.tagRecord;
                 const baseRecord = match.baseRecord;
 
+                // Análisis de problemas
+                let problema = '';
+                let accion = '';
+                let observaciones = '';
+
+                if (match.matchType === 'RUT_EXACTO') {
+                    problema = 'NINGUNO - DATOS CORRECTOS';
+                    accion = 'MANTENER';
+                    observaciones = 'Coincidencia perfecta por RUT';
+                } else if (match.matchType === 'NOMBRE_SIMILAR') {
+                    const rutDiferente = normalizeRUT(tagRecord.RUT) !== normalizeRUT(baseRecord.RUT);
+                    if (rutDiferente) {
+                        problema = 'RUT INCORRECTO EN TAG';
+                        accion = `CAMBIAR RUT DE ${tagRecord.RUT} A ${baseRecord.RUT}`;
+                        observaciones = `Persona existe pero RUT mal digitado. Similitud nombres: ${(match.similarity * 100).toFixed(1)}%`;
+                    } else {
+                        problema = 'NOMBRE LIGERAMENTE DIFERENTE';
+                        accion = 'VERIFICAR ORTOGRAFÍA';
+                        observaciones = 'RUT coincide, verificar si hay error tipográfico en nombre';
+                    }
+                }
+
                 const row = [
                     match.matchType,
                     (match.similarity * 100).toFixed(1) + '%',
-                    tagRecord.RUT || '',
-                    tagRecord.NOMBRE || '',
-                    tagRecord.EMPRESA || '',
-                    tagRecord.CONTRATO || '',
-                    tagRecord.CARGO || '',
-                    baseRecord.RUT || '',
-                    baseRecord.NOMBRE || '',
-                    baseRecord.EMPRESA || '',
-                    baseRecord.CONTRATO || '',
-                    baseRecord.CARGO || '',
-                    baseRecord.ADC_NOMBRE_CTA || '',
-                    baseRecord.ADC_NOMBRE_COD || '',
-                    baseRecord.GERENCIA || '',
-                    baseRecord.SUPERINTENDENCIA || '',
-                    baseRecord.TIPO || '',
-                    baseRecord.ACTUALIZACION || '',
-                    (tagRecord.RUT !== baseRecord.RUT) ? 'SÍ' : 'NO',
-                    (tagRecord.RUT !== baseRecord.RUT) ? 'CORREGIR RUT EN TAG' : 'VERIFICAR OTROS DATOS'
+                    baseRecord.RUT || 'N/A',
+                    baseRecord.NOMBRE || 'N/A',
+                    baseRecord.EMPRESA || 'N/A',
+                    baseRecord.CARGO || 'N/A',
+                    tagRecord.RUT || 'N/A',
+                    tagRecord.NOMBRE || 'N/A',
+                    tagRecord.EMPRESA || 'N/A',
+                    tagRecord.CARGO || 'N/A',
+                    problema,
+                    accion,
+                    observaciones
                 ];
 
                 excelData.push(row);
@@ -423,17 +499,26 @@
             const wb = XLSX.utils.book_new();
             const ws = XLSX.utils.aoa_to_sheet(excelData);
 
-            // Aplicar estilos y ancho de columnas
+            // Aplicar estilos y ancho de columnas optimizado
             const colWidths = [
-                { wch: 15 }, { wch: 12 }, { wch: 15 }, { wch: 30 }, { wch: 20 },
-                { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 30 }, { wch: 20 },
-                { wch: 15 }, { wch: 20 }, { wch: 25 }, { wch: 25 }, { wch: 15 },
-                { wch: 20 }, { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 25 }
+                { wch: 18 }, // TIPO_COINCIDENCIA
+                { wch: 12 }, // SIMILITUD_%
+                { wch: 18 }, // BASE_RUT
+                { wch: 35 }, // BASE_NOMBRE
+                { wch: 25 }, // BASE_EMPRESA
+                { wch: 25 }, // BASE_CARGO
+                { wch: 18 }, // TAG_RUT
+                { wch: 35 }, // TAG_NOMBRE
+                { wch: 25 }, // TAG_EMPRESA
+                { wch: 25 }, // TAG_CARGO
+                { wch: 25 }, // PROBLEMA_DETECTADO
+                { wch: 30 }, // ACCIÓN_REQUERIDA
+                { wch: 40 }  // OBSERVACIONES
             ];
             ws['!cols'] = colWidths;
 
-            XLSX.utils.book_append_sheet(wb, ws, 'Coincidencias');
-            XLSX.writeFile(wb, 'Coincidencias_Lado_a_Lado.xlsx');
+            XLSX.utils.book_append_sheet(wb, ws, 'Coincidencias_Lado_a_Lado');
+            XLSX.writeFile(wb, 'Coincidencias_Para_Revision.xlsx');
         }
 
         // Función para exportar sin coincidencias a Excel
